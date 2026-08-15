@@ -1,17 +1,13 @@
 name: Miloco Fixed
-version: "main"
+version: "v0.1.2"
 slug: miloco-fixed
-description: Xiaomi miloco streamer (ready image, HD patches)
+description: Xiaomi miloco streamer (official backend, ingress-ready)
 arch:
   - aarch64
-image: ghcr.nju.edu.cn/miiot/miloco
+image: ghcr.nju.edu.cn/xiaomi/miloco-backend
 init: false
-environment:
-  MILOCO_SERVER__HOST: "0.0.0.0"
-  MILOCO_SERVER__PORT: "8000"
-  MILOCO_HOME: "/data"
 ingress: true
-ingress_port: 8000
+ingress_port: 28800
 ingress_entry: "/"
 panel_admin: false
 volumes:
