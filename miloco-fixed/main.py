@@ -126,8 +126,8 @@ def start_server():
     logger.info("Starting Miloco server...")
 
     log_config = get_uvicorn_log_config()
-    # update_localhost_cert(cert_path=SERVER_CONFIG["ssl_certfile"], key_path=SERVER_CONFIG["ssl_keyfile"])
-    # SSL disabled for HA ingress (supervisor proxies plain HTTP)
+    update_localhost_cert(cert_path=SERVER_CONFIG["ssl_certfile"], key_path=SERVER_CONFIG["ssl_keyfile"])
+    # NOTE: cert generation kept (creates .temp/cert dirs); SSL removed from uvicorn below for HA ingress
 
     uvicorn.run(
         app,
