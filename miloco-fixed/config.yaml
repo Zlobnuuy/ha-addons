@@ -7,6 +7,10 @@ arch:
 image: ghcr.nju.edu.cn/miiot/miloco
 host_network: true
 init: false
+environment:
+  MILOCO_SERVER__HOST: "0.0.0.0"
+  MILOCO_SERVER__PORT: "8000"
+  MILOCO_HOME: "/data"
 volumes:
   - /data
 options: {}
