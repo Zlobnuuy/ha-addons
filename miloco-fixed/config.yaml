@@ -4,7 +4,7 @@ slug: miloco-fixed
 description: Xiaomi miloco streamer (ready image, HD patches)
 arch:
   - aarch64
-image: ghcr.nju.edu.cn/miiot/miloco:main
+image: ghcr.nju.edu.cn/miiot/miloco@sha256:e19e0bca607b03d8ce91bf73ebdd585e34b62970855d386f441292a14030add1
 host_network: true
 init: false
 volumes:
