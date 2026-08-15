@@ -7,7 +7,7 @@ arch:
 image: ghcr.nju.edu.cn/xiaomi/miloco-backend
 init: false
 ingress: true
-ingress_port: 28800
+ingress_port: 8000
 ingress_entry: "/"
 panel_admin: false
 volumes:
