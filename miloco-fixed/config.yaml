@@ -1,10 +1,10 @@
 name: Miloco Fixed
 version: "v0.1.2"
 slug: miloco-fixed
-description: Xiaomi miloco streamer (official backend, ingress-ready, SSL patched)
+description: Xiaomi miloco streamer (SSL patched build, ingress-ready)
 arch:
   - aarch64
-image: ghcr.nju.edu.cn/xiaomi/miloco-backend
+build: true
 init: false
 ingress: true
 ingress_port: 8000
@@ -12,7 +12,5 @@ ingress_entry: "/"
 panel_admin: false
 volumes:
   - /data
-  - /config:/config
-  - /config/miloco_main_fix.py:/app/miloco_server/main.py:ro
 options: {}
 schema: {}
