@@ -11,6 +11,10 @@ environment:
   MILOCO_SERVER__HOST: "0.0.0.0"
   MILOCO_SERVER__PORT: "8000"
   MILOCO_HOME: "/data"
+ingress: true
+ingress_port: 8000
+ingress_entry: "/"
+panel_admin: false
 volumes:
   - /data
 options: {}
