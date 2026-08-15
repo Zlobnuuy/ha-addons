@@ -1,5 +1,5 @@
 name: Miloco Fixed
-version: "latest"
+version: "main"
 slug: miloco-fixed
 description: Xiaomi miloco streamer (ready image, HD patches)
 arch:
