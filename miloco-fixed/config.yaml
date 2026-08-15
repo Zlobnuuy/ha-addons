@@ -1,0 +1,13 @@
+name: Miloco Fixed
+version: "1.0.0"
+slug: miloco-fixed
+description: Xiaomi miloco streamer (ready image, HD patches)
+arch:
+  - aarch64
+image: ghcr.nju.edu.cn/miiot/miloco:main
+host_network: true
+init: false
+volumes:
+  - /data
+options: {}
+schema: {}
