@@ -133,32 +133,31 @@ def packet_monitor(extra_prefixes, stop):
         return
     pkt.settimeout(1.0)
     _LOGGER.info("LAN RELAY: AF_PACKET monitor started")
-    stats = {"total": 0, "iot2_reply": 0, "iot2_any": 0, "last_report": time.time()}
+    stats = {"total": 0, "iot2_reply": 0, "iot2_any": 0, "last_report": time.time(), "last_portdump": 0}
     last = None
     while not stop.is_set():
         try:
             frame = pkt.recv(65535)
         except socket.timeout:
-            # Periodic UDP port table dump (who listens on what).
+            # Periodic UDP port table dump (who listens on what) — every 30s,
+            # independent of traffic counters.
             try:
-                with open("/proc/net/udp") as fh:
-                    lines = fh.read().splitlines()[1:]
-                ports = []
-                for line in lines:
-                    parts = line.split()
-                    if len(parts) < 2:
-                        continue
-                    local = parts[1]
-                    st = parts[3]
-                    if st == "07":  # UDP_LISTEN
-                        addr, port = local.rsplit(":", 1)
-                        ip = ".".join(str(int(addr[i:i + 2], 16)) for i in (6, 4, 2, 0))
-                        ports.append(f"{ip}:{int(port, 16)}")
-                now = time.time()
-                if now - stats["last_report"] > 30:
-                    stats["last_report"] = now
-                    _LOGGER.info("LAN RELAY: MONITOR total=%d iot2_any=%d iot2_reply=%d udp_listen=%s",
-                                 stats["total"], stats["iot2_any"], stats["iot2_reply"], sorted(ports))
+                if time.time() - stats["last_portdump"] >= 30:
+                    stats["last_portdump"] = time.time()
+                    with open("/proc/net/udp") as fh:
+                        lines = fh.read().splitlines()[1:]
+                    ports = []
+                    for line in lines:
+                        parts = line.split()
+                        if len(parts) < 2:
+                            continue
+                        local = parts[1]
+                        st = parts[3]
+                        if st == "07":  # UDP_LISTEN
+                            addr, port = local.rsplit(":", 1)
+                            ip = ".".join(str(int(addr[i:i + 2], 16)) for i in (6, 4, 2, 0))
+                            ports.append(f"{ip}:{int(port, 16)}")
+                    _LOGGER.info("LAN RELAY: PORTDUMP udp_listen=%s", sorted(ports))
             except OSError:
                 pass
             continue
