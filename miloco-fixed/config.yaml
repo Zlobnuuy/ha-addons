@@ -13,6 +13,7 @@ ingress_entry: "/"
 panel_admin: false
 environment:
   MILOCO_SERVER_STORAGE_DIR: /data
+  MILOCO_LAN_SUBNETS: "192.168.0.0/24,192.168.1.0/24,192.168.2.0/24,192.168.8.0/24"
 volumes:
   - /data
 options: {}
