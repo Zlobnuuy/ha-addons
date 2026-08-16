@@ -241,8 +241,25 @@ def main():
         now = time.time()
         if now - stats["last_report"] > 30:
             stats["last_report"] = now
-            _LOGGER.info("LAN RELAY: stats seen=%d fwd=%d last_src=%s:%s len=%d",
-                         stats["seen"], stats["fwd"], src_ip, src_port, len(data))
+            try:
+                with open("/proc/net/udp") as fh:
+                    lines = fh.read().splitlines()[1:]
+                ports = []
+                for line in lines:
+                    parts = line.split()
+                    if len(parts) < 2:
+                        continue
+                    local = parts[1]
+                    st = parts[3]
+                    if st == "07":  # UDP_LISTEN
+                        addr_h, port_h = local.rsplit(":", 1)
+                        ip = ".".join(str(int(addr_h[i:i + 2], 16)) for i in (6, 4, 2, 0))
+                        ports.append(f"{ip}:{int(port_h, 16)}")
+                port_str = ",".join(sorted(ports))
+            except OSError:
+                port_str = "?"
+            _LOGGER.info("LAN RELAY: stats seen=%d fwd=%d last_src=%s:%s len=%d udp_listen=%s",
+                         stats["seen"], stats["fwd"], src_ip, src_port, len(data), port_str)
         if src_ip not in local_ips:
             continue  # camera reply / not from us -> skip
         if len(data) > 512:
