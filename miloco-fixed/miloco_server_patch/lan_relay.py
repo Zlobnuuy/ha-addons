@@ -1,23 +1,31 @@
 #!/usr/bin/env python3
-"""Multi-segment LanSearch relay for miloco.
+"""Multi-segment LanSearch relay for miloco (two-way).
 
 C-SDK (libmiot_camera_lite) discovers cameras via cs2p2p LanSearch broadcast
 on UDP 54321. The broadcast does NOT cross Keenetic router segments, so
 cameras in other subnets (IOT2 192.168.2.x, WirelessK 192.168.0.x) never
-answer. Python miot.lan already finds them via unicast probes, but the SDK
-is a black box that only trusts its own LanSearch replies.
+answer.
 
-This relay listens on 0.0.0.0:54321 (SO_REUSEADDR, so it coexists with the
-SDK socket), and for every broadcast packet it receives from the SDK
-(dst 255.255.255.255:54321) it re-sends a copy unicast to every IP in the
-configured extra subnets. Cameras answer unicast back to the SDK's source
-port — the SDK sees the reply exactly as if the camera were in its own L2
-segment, and connects over LAN.
+How the SDK works (observed):
+  - SDK sends LanSearch broadcast FROM its own UDP socket (ephemeral port,
+    e.g. 34526) TO 255.255.255.255:54321.
+  - Cameras in the same L2 segment answer unicast to 192.168.1.214:34526
+    (the SDK socket) -> SDK sees them.
+  - Cameras in other segments never receive the broadcast.
+
+Two-way relay on 0.0.0.0:54321 (SO_REUSEADDR, coexists with SDK socket):
+  1. SDK broadcast arrives here (src = 192.168.1.214:SDK_PORT).
+     Remember SDK_PORT, re-send the probe unicast to every IP in the extra
+     subnets, USING OUR OWN 54321 socket (so replies come back to 54321).
+  2. Camera replies from extra subnets (src = 192.168.2.x:cam_port) arrive
+     on our 54321 socket -> forward them to 192.168.1.214:SDK_PORT so the
+     SDK sees the reply exactly as if the camera were in its own segment.
 
 Env: MILOCO_LAN_SUBNETS="192.168.0.0/24,192.168.2.0/24" (same as miot.lan scan)
 """
 import logging
 import os
+import re
 import socket
 import time
 
@@ -42,8 +50,6 @@ def get_local_ips():
     """Find this host's own IPv4 addresses (reliable in containers where
     gethostname()/getaddrinfo() does not resolve the real interface IP)."""
     ips = {"127.0.0.1"}
-    # Trick: UDP connect to a gateway-ish address picks the outgoing interface
-    # without sending anything.
     for probe in ("192.168.1.1", "192.168.0.1", "8.8.8.8"):
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -53,11 +59,10 @@ def get_local_ips():
             s.close()
         except OSError:
             pass
-    # Also enumerate via /proc/net/fib_trie (cheap, no deps)
     try:
-        trie = open("/proc/net/fib_trie").read()
-        for m in __import__("re").finditer(r"\|-- (\d+\.\d+\.\d+\.\d+)", trie):
-            ips.add(m.group(1))
+        with open("/proc/net/fib_trie") as fh:
+            for m in re.finditer(r"\|-- (\d+\.\d+\.\d+\.\d+)", fh.read()):
+                ips.add(m.group(1))
     except OSError:
         pass
     return ips
@@ -83,16 +88,16 @@ def main():
         return
     sock.settimeout(1.0)
 
-    fwd = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
-    fwd.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-
-    # Only forward packets ORIGINATING from this host (SDK LanSearch probes).
-    # Camera replies come from camera IPs -> never re-forwarded (no loop).
     local_ips = get_local_ips()
     _LOGGER.info("LAN RELAY: local sources: %s", sorted(local_ips))
+    local_ip = next((ip for ip in local_ips if not ip.startswith("127.")), "127.0.0.1")
+
+    # Camera IPs live in these subnets (their replies are forwarded to SDK).
+    extra_ips = set(targets)
 
     _LOGGER.info("LAN RELAY: listening on %s", OT_PORT)
-    stats = {"seen": 0, "fwd": 0, "last_report": time.time()}
+    stats = {"seen": 0, "fwd": 0, "back": 0, "last_report": time.time()}
+    sdk_port = None
     while True:
         try:
             data, addr = sock.recvfrom(4096)
@@ -105,18 +110,29 @@ def main():
         now = time.time()
         if now - stats["last_report"] > 30:
             stats["last_report"] = now
-            _LOGGER.info("LAN RELAY: stats seen=%d fwd=%d last_src=%s:%s len=%d",
-                         stats["seen"], stats["fwd"], src_ip, src_port, len(data))
-        if src_ip not in local_ips:
-            continue  # camera reply / not from us -> skip (no loop)
-        if len(data) > 512:
-            continue
-        for target in targets:
-            try:
-                fwd.sendto(data, (target, OT_PORT))
-                stats["fwd"] += 1
-            except OSError:
-                pass
+            _LOGGER.info("LAN RELAY: stats seen=%d fwd=%d back=%d sdk_port=%s last_src=%s:%s len=%d",
+                         stats["seen"], stats["fwd"], stats["back"], sdk_port, src_ip, src_port, len(data))
+
+        if src_ip in local_ips:
+            # SDK LanSearch probe (or anything local -> 54321). Re-send unicast
+            # to every IP in the extra subnets, from our 54321 socket.
+            if len(data) > 512:
+                continue
+            sdk_port = src_port
+            for target in targets:
+                try:
+                    sock.sendto(data, (target, OT_PORT))
+                    stats["fwd"] += 1
+                except OSError:
+                    pass
+        elif src_ip in extra_ips:
+            # Camera reply from an extra subnet -> deliver to the SDK socket.
+            if sdk_port and len(data) <= 2048:
+                try:
+                    sock.sendto(data, (local_ip, sdk_port))
+                    stats["back"] += 1
+                except OSError:
+                    pass
 
 
 if __name__ == "__main__":
