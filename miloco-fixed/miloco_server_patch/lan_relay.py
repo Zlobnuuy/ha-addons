@@ -16,13 +16,13 @@ segment, and connects over LAN.
 
 Env: MILOCO_LAN_SUBNETS="192.168.0.0/24,192.168.2.0/24" (same as miot.lan scan)
 """
+import logging
 import os
 import socket
-import struct
-import threading
 
 OT_PORT = 54321
-BROADCAST_ADDRS = ("255.255.255.255",)
+
+_LOGGER = logging.getLogger(__name__)
 
 
 def iter_hosts(subnets):
@@ -38,10 +38,10 @@ def iter_hosts(subnets):
 def main():
     subnets = [s.strip() for s in os.getenv("MILOCO_LAN_SUBNETS", "").split(",") if s.strip()]
     if not subnets:
-        print("[lanrelay] no MILOCO_LAN_SUBNETS, disabled")
+        _LOGGER.info("lan_relay: no MILOCO_LAN_SUBNETS, disabled")
         return
     targets = list(iter_hosts(subnets))
-    print(f"[lanrelay] relaying LanSearch to {len(targets)} hosts across {subnets}")
+    _LOGGER.info("lan_relay: relaying LanSearch to %d hosts across %s", len(targets), subnets)
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -49,7 +49,7 @@ def main():
     try:
         sock.bind(("0.0.0.0", OT_PORT))
     except OSError as err:
-        print(f"[lanrelay] bind 0.0.0.0:{OT_PORT} failed: {err} (SDK may hold it without REUSEADDR)")
+        _LOGGER.error("lan_relay: bind 0.0.0.0:%s failed: %s (SDK may hold it without REUSEADDR)", OT_PORT, err)
         return
     sock.settimeout(1.0)
 
@@ -65,11 +65,11 @@ def main():
             local_ips.add(info[4][0])
     except OSError:
         pass
-    for ifname_ip in ("192.168.1.214", "127.0.0.1"):
+    for ifname_ip in ("127.0.0.1",):
         local_ips.add(ifname_ip)
-    print(f"[lanrelay] local sources: {sorted(local_ips)}")
+    _LOGGER.info("lan_relay: local sources: %s", sorted(local_ips))
 
-    print("[lanrelay] listening for LanSearch broadcasts")
+    _LOGGER.info("lan_relay: listening for LanSearch broadcasts on %s", OT_PORT)
     while True:
         try:
             data, addr = sock.recvfrom(4096)
