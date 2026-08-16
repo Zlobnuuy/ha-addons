@@ -16,16 +16,16 @@ segment, and connects over LAN.
 
 Env: MILOCO_LAN_SUBNETS="192.168.0.0/24,192.168.2.0/24" (same as miot.lan scan)
 """
+import logging
 import os
 import socket
-import sys
 import time
 
 OT_PORT = 54321
 
-
-def log(msg):
-    print(f"[lan_relay] {msg}", flush=True)
+# Use the miloco_server.main logger — it is guaranteed to hit the log file
+# that the supervisor shows (other loggers may not be configured).
+_LOGGER = logging.getLogger("miloco_server.main")
 
 
 def iter_hosts(subnets):
@@ -39,22 +39,22 @@ def iter_hosts(subnets):
 
 
 def main():
-    log("relay main() started")
+    _LOGGER.info("LAN RELAY: main() started")
     subnets = [s.strip() for s in os.getenv("MILOCO_LAN_SUBNETS", "").split(",") if s.strip()]
     if not subnets:
-        log("no MILOCO_LAN_SUBNETS, disabled")
+        _LOGGER.info("LAN RELAY: no MILOCO_LAN_SUBNETS, disabled")
         return
     targets = list(iter_hosts(subnets))
-    log(f"relaying LanSearch to {len(targets)} hosts across {subnets}")
+    _LOGGER.info("LAN RELAY: relaying LanSearch to %d hosts across %s", len(targets), subnets)
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
     try:
         sock.bind(("0.0.0.0", OT_PORT))
-        log(f"bound 0.0.0.0:{OT_PORT} OK")
+        _LOGGER.info("LAN RELAY: bound 0.0.0.0:%s OK", OT_PORT)
     except OSError as err:
-        log(f"bind 0.0.0.0:{OT_PORT} FAILED: {err} (SDK may hold it without REUSEADDR)")
+        _LOGGER.error("LAN RELAY: bind 0.0.0.0:%s FAILED: %s (SDK may hold it without REUSEADDR)", OT_PORT, err)
         return
     sock.settimeout(1.0)
 
@@ -70,9 +70,9 @@ def main():
     except OSError:
         pass
     local_ips.add("127.0.0.1")
-    log(f"local sources: {sorted(local_ips)}")
+    _LOGGER.info("LAN RELAY: local sources: %s", sorted(local_ips))
 
-    log(f"listening on {OT_PORT}")
+    _LOGGER.info("LAN RELAY: listening on %s", OT_PORT)
     stats = {"seen": 0, "fwd": 0, "last_report": time.time()}
     while True:
         try:
@@ -86,7 +86,8 @@ def main():
         now = time.time()
         if now - stats["last_report"] > 30:
             stats["last_report"] = now
-            log(f"stats seen={stats['seen']} fwd={stats['fwd']} last_src={src_ip}:{src_port} len={len(data)}")
+            _LOGGER.info("LAN RELAY: stats seen=%d fwd=%d last_src=%s:%s len=%d",
+                         stats["seen"], stats["fwd"], src_ip, src_port, len(data))
         if src_ip not in local_ips:
             continue  # camera reply / not from us -> skip (no loop)
         if len(data) > 512:
