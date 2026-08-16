@@ -56,6 +56,19 @@ def main():
     fwd = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
     fwd.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
 
+    # Only forward packets ORIGINATING from this host (SDK LanSearch probes).
+    # Camera replies come from camera IPs -> never re-forwarded (no loop).
+    local_ips = set()
+    try:
+        host = socket.gethostname()
+        for info in socket.getaddrinfo(host, None, socket.AF_INET):
+            local_ips.add(info[4][0])
+    except OSError:
+        pass
+    for ifname_ip in ("192.168.1.214", "127.0.0.1"):
+        local_ips.add(ifname_ip)
+    print(f"[lanrelay] local sources: {sorted(local_ips)}")
+
     print("[lanrelay] listening for LanSearch broadcasts")
     while True:
         try:
@@ -64,22 +77,16 @@ def main():
             continue
         except OSError:
             continue
-        dst = addr[0]
-        # Only forward packets that look like LanSearch probes (small, < 256B)
-        # from the SDK / local process (any local source) heading to broadcast.
+        src_ip = addr[0]
+        if src_ip not in local_ips:
+            continue  # camera reply / anything not from us -> skip (no loop)
         if len(data) > 512:
             continue
-        is_bcast = dst in BROADCAST_ADDRS or dst.endswith(".255")
-        # Forward regardless of source: SDK probes are the trigger. Avoid
-        # loops: do not re-forward packets we just sent (src is our fwd port).
         for target in targets:
             try:
                 fwd.sendto(data, (target, OT_PORT))
             except OSError:
                 pass
-        if is_bcast and len(data) < 512:
-            # log once per burst, throttled
-            pass
 
 
 if __name__ == "__main__":
