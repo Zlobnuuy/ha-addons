@@ -1,25 +1,18 @@
 #!/usr/bin/env python3
-"""Multi-segment LanSearch relay for miloco (raw-socket source spoofing).
-
-C-SDK (libmiot_camera_lite) discovers cameras via cs2p2p LanSearch broadcast
-on UDP 54321. The broadcast does NOT cross Keenetic router segments, so
-cameras in other subnets (IOT2 192.168.2.x, WirelessK 192.168.0.x) never
-answer.
-
-Observed SDK behaviour:
-  - SDK sends LanSearch broadcast FROM its own UDP socket (ephemeral port,
-    e.g. 46871) TO 255.255.255.255:54321.
-  - Cameras in the same L2 segment answer unicast to 192.168.1.214:46871
-    (the SDK socket) -> SDK sees them.
-  - Cameras in other segments never receive the broadcast.
+"""Multi-segment LanSearch relay for miloco (raw-socket spoofing + AF_PACKET monitor).
 
 Strategy (source-port spoofing with a raw socket):
   - Listen on 0.0.0.0:54321 (SO_REUSEADDR) for SDK LanSearch probes.
   - When a probe arrives from 192.168.1.214:SDK_PORT, re-send its payload
     unicast to every IP in the extra subnets WITH THE SAME SOURCE PORT
     (SDK_PORT). Cameras in extra subnets then reply unicast to
-    192.168.1.214:SDK_PORT — straight into the SDK socket, with the
-    camera's own source IP. No reply forwarding needed.
+    192.168.1.214:SDK_PORT — straight into the SDK socket.
+
+AF_PACKET monitor:
+  - Sits on the default interface, captures ALL UDP packets, logs a summary
+    of traffic involving cameras in the extra subnets (src/dst IPs and ports)
+    every 30s. This is an in-container tcpdump to verify that cameras DO
+    answer the relayed LanSearch and that replies reach the SDK port.
 
 Env: MILOCO_LAN_SUBNETS="192.168.0.0/24,192.168.2.0/24" (same as miot.lan scan)
 """
@@ -67,28 +60,6 @@ def get_local_ips():
     return ips
 
 
-def make_udp_packet(src_ip, src_port, dst_ip, dst_port, payload):
-    """Build a full IPv4+UDP packet with spoofed source."""
-    src = socket.inet_aton(src_ip)
-    dst = socket.inet_aton(dst_ip)
-    udp_len = 8 + len(payload)
-
-    # UDP header
-    udp = struct.pack("!HHHH", src_port, dst_port, udp_len, 0)
-    # Pseudo header for checksum
-    pseudo = src + dst + struct.pack("!BBH", 0, 17, udp_len)
-    cs = checksum(pseudo + udp + payload)
-    udp = struct.pack("!HHHH", src_port, dst_port, udp_len, cs)
-
-    ip_len = 20 + udp_len
-    iph = struct.pack(
-        "!BBHHHBBH4s4s",
-        0x45, 0, ip_len, 0x1234, 0, 64, 17, 0, src, dst,
-    )
-    iph = iph[:10] + struct.pack("!H", checksum(iph)) + iph[12:]
-    return iph + udp + payload
-
-
 def checksum(data):
     if len(data) % 2:
         data += b"\x00"
@@ -98,6 +69,97 @@ def checksum(data):
     return (~s) & 0xFFFF
 
 
+def make_udp_packet(src_ip, src_port, dst_ip, dst_port, payload):
+    """Build a full IPv4+UDP packet with spoofed source."""
+    src = socket.inet_aton(src_ip)
+    dst = socket.inet_aton(dst_ip)
+    udp_len = 8 + len(payload)
+    udp = struct.pack("!HHHH", src_port, dst_port, udp_len, 0)
+    pseudo = src + dst + struct.pack("!BBH", 0, 17, udp_len)
+    cs = checksum(pseudo + udp + payload)
+    udp = struct.pack("!HHHH", src_port, dst_port, udp_len, cs)
+    ip_len = 20 + udp_len
+    iph = struct.pack(
+        "!BBHHHBBH4s4s",
+        0x45, 0, ip_len, 0x1234, 0, 64, 17, 0, src, dst,
+    )
+    iph = iph[:10] + struct.pack("!H", checksum(iph)) + iph[12:]
+    return iph + udp + payload
+
+
+def parse_udp(frame):
+    """Parse an Ethernet+IPv4+UDP frame -> (src_ip, src_port, dst_ip, dst_port, len) or None."""
+    try:
+        if len(frame) < 34:
+            return None
+        eth_type = struct.unpack("!H", frame[12:14])[0]
+        if eth_type == 0x8100:  # VLAN
+            eth_type = struct.unpack("!H", frame[16:18])[0]
+            ip_off = 18
+        else:
+            ip_off = 14
+        if eth_type != 0x0800:
+            return None
+        if len(frame) < ip_off + 20:
+            return None
+        ver_ihl = frame[ip_off]
+        if ver_ihl >> 4 != 4:
+            return None
+        ihl = (ver_ihl & 0x0F) * 4
+        proto = frame[ip_off + 9]
+        if proto != 17:  # UDP
+            return None
+        src_ip = socket.inet_ntoa(frame[ip_off + 12:ip_off + 16])
+        dst_ip = socket.inet_ntoa(frame[ip_off + 16:ip_off + 20])
+        udp_off = ip_off + ihl
+        if len(frame) < udp_off + 8:
+            return None
+        src_port, dst_port, ulen = struct.unpack("!HHH", frame[udp_off:udp_off + 6])
+        return (src_ip, src_port, dst_ip, dst_port, ulen)
+    except Exception:
+        return None
+
+
+def packet_monitor(extra_prefixes, stop):
+    """AF_PACKET monitor: log UDP traffic involving extra-subnet cameras."""
+    try:
+        pkt = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.ntohs(0x0003))
+    except OSError as err:
+        _LOGGER.error("LAN RELAY: AF_PACKET monitor FAILED: %s", err)
+        return
+    pkt.settimeout(1.0)
+    _LOGGER.info("LAN RELAY: AF_PACKET monitor started")
+    stats = {"total": 0, "extra_out": 0, "extra_in": 0, "last_report": time.time()}
+    last = None
+    while not stop.is_set():
+        try:
+            frame = pkt.recv(65535)
+        except socket.timeout:
+            continue
+        except OSError:
+            continue
+        udp = parse_udp(frame)
+        if not udp:
+            continue
+        src_ip, src_port, dst_ip, dst_port, ulen = udp
+        stats["total"] += 1
+        src_extra = any(src_ip.startswith(p) for p in extra_prefixes)
+        dst_extra = any(dst_ip.startswith(p) for p in extra_prefixes)
+        if src_extra or dst_extra:
+            now = time.time()
+            if now - stats["last_report"] > 30:
+                stats["last_report"] = now
+                _LOGGER.info("LAN RELAY: MONITOR total=%d src_extra=%d dst_extra=%d last=%s:%d->%s:%d len=%d",
+                             stats["total"], stats.get("src_extra", 0), stats.get("dst_extra", 0),
+                             src_ip, src_port, dst_ip, dst_port, ulen)
+                stats["src_extra"] = stats.get("src_extra", 0)
+                stats["dst_extra"] = stats.get("dst_extra", 0)
+            if src_extra:
+                stats["src_extra"] = stats.get("src_extra", 0) + 1
+            if dst_extra:
+                stats["dst_extra"] = stats.get("dst_extra", 0) + 1
+
+
 def main():
     _LOGGER.info("LAN RELAY: main() started")
     subnets = [s.strip() for s in os.getenv("MILOCO_LAN_SUBNETS", "").split(",") if s.strip()]
@@ -105,9 +167,9 @@ def main():
         _LOGGER.info("LAN RELAY: no MILOCO_LAN_SUBNETS, disabled")
         return
     targets = list(iter_hosts(subnets))
+    extra_prefixes = [".".join(s.split(".")[:3]) + "." for s in subnets]
     _LOGGER.info("LAN RELAY: relaying LanSearch to %d hosts across %s", len(targets), subnets)
 
-    # Listener for SDK probes.
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
@@ -133,6 +195,12 @@ def main():
         raw = None
         raw_mode = False
         _LOGGER.error("LAN RELAY: raw socket FAILED (%s) — falling back to normal sendto", err)
+
+    # AF_PACKET monitor thread.
+    import threading
+    stop = threading.Event()
+    mon = threading.Thread(target=packet_monitor, args=(extra_prefixes, stop), daemon=True)
+    mon.start()
 
     _LOGGER.info("LAN RELAY: listening on %s (raw=%s)", OT_PORT, raw_mode)
     stats = {"seen": 0, "fwd": 0, "last_report": time.time()}
