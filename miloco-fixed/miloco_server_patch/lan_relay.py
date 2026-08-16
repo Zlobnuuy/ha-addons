@@ -40,6 +40,25 @@ def iter_hosts(subnets):
             yield f"{base}.{host}"
 
 
+# Known camera IPs in extra subnets (from Keenetic hotspot + miot.lan scan).
+# Relay sends ONLY to these — instant delivery, SDK socket stays alive.
+# Env: MILOCO_LAN_TARGETS="192.168.2.164,192.168.2.70,..." (optional override)
+KNOWN_TARGETS = [
+    # IOT2 (192.168.2.x) — xiaovv + Mi360 + chuangmi
+    "192.168.2.55", "192.168.2.68", "192.168.2.70", "192.168.2.94",
+    "192.168.2.112", "192.168.2.147", "192.168.2.152", "192.168.2.164",
+    "192.168.2.199", "192.168.2.202", "192.168.2.252",
+    # WirelessK (192.168.0.x) — if any
+]
+
+
+def resolve_targets(subnets):
+    env = os.getenv("MILOCO_LAN_TARGETS", "").strip()
+    if env:
+        return [ip.strip() for ip in env.split(",") if ip.strip()]
+    return [ip for ip in KNOWN_TARGETS]
+
+
 def get_local_ips():
     ips = {"127.0.0.1"}
     for probe in ("192.168.1.1", "192.168.0.1", "8.8.8.8"):
@@ -188,12 +207,9 @@ def packet_monitor(extra_prefixes, stop):
 def main():
     _LOGGER.info("LAN RELAY: main() started")
     subnets = [s.strip() for s in os.getenv("MILOCO_LAN_SUBNETS", "").split(",") if s.strip()]
-    if not subnets:
-        _LOGGER.info("LAN RELAY: no MILOCO_LAN_SUBNETS, disabled")
-        return
-    targets = list(iter_hosts(subnets))
+    targets = resolve_targets(subnets)
     extra_prefixes = [".".join(s.split(".")[:3]) + "." for s in subnets]
-    _LOGGER.info("LAN RELAY: relaying LanSearch to %d hosts across %s", len(targets), subnets)
+    _LOGGER.info("LAN RELAY: relaying LanSearch to %d known targets: %s", len(targets), targets)
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
