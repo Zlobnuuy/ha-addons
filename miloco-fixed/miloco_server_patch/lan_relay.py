@@ -38,6 +38,31 @@ def iter_hosts(subnets):
             yield f"{base}.{host}"
 
 
+def get_local_ips():
+    """Find this host's own IPv4 addresses (reliable in containers where
+    gethostname()/getaddrinfo() does not resolve the real interface IP)."""
+    ips = {"127.0.0.1"}
+    # Trick: UDP connect to a gateway-ish address picks the outgoing interface
+    # without sending anything.
+    for probe in ("192.168.1.1", "192.168.0.1", "8.8.8.8"):
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.settimeout(1.0)
+            s.connect((probe, 80))
+            ips.add(s.getsockname()[0])
+            s.close()
+        except OSError:
+            pass
+    # Also enumerate via /proc/net/fib_trie (cheap, no deps)
+    try:
+        trie = open("/proc/net/fib_trie").read()
+        for m in __import__("re").finditer(r"\|-- (\d+\.\d+\.\d+\.\d+)", trie):
+            ips.add(m.group(1))
+    except OSError:
+        pass
+    return ips
+
+
 def main():
     _LOGGER.info("LAN RELAY: main() started")
     subnets = [s.strip() for s in os.getenv("MILOCO_LAN_SUBNETS", "").split(",") if s.strip()]
@@ -62,14 +87,8 @@ def main():
     fwd.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
 
     # Only forward packets ORIGINATING from this host (SDK LanSearch probes).
-    local_ips = set()
-    try:
-        host = socket.gethostname()
-        for info in socket.getaddrinfo(host, None, socket.AF_INET):
-            local_ips.add(info[4][0])
-    except OSError:
-        pass
-    local_ips.add("127.0.0.1")
+    # Camera replies come from camera IPs -> never re-forwarded (no loop).
+    local_ips = get_local_ips()
     _LOGGER.info("LAN RELAY: local sources: %s", sorted(local_ips))
 
     _LOGGER.info("LAN RELAY: listening on %s", OT_PORT)
