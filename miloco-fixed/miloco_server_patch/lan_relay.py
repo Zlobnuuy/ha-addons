@@ -121,7 +121,11 @@ def parse_udp(frame):
 
 
 def packet_monitor(extra_prefixes, stop):
-    """AF_PACKET monitor: log UDP traffic involving extra-subnet cameras."""
+    """AF_PACKET monitor: log UDP traffic involving extra-subnet cameras.
+
+    Special attention: replies FROM 192.168.2.x TO port 54321 (or the SDK
+    ephemeral port) prove that IOT2 cameras answer the relayed LanSearch.
+    """
     try:
         pkt = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.ntohs(0x0003))
     except OSError as err:
@@ -129,7 +133,7 @@ def packet_monitor(extra_prefixes, stop):
         return
     pkt.settimeout(1.0)
     _LOGGER.info("LAN RELAY: AF_PACKET monitor started")
-    stats = {"total": 0, "extra_out": 0, "extra_in": 0, "last_report": time.time()}
+    stats = {"total": 0, "iot2_reply": 0, "iot2_any": 0, "last_report": time.time()}
     last = None
     while not stop.is_set():
         try:
@@ -143,21 +147,21 @@ def packet_monitor(extra_prefixes, stop):
             continue
         src_ip, src_port, dst_ip, dst_port, ulen = udp
         stats["total"] += 1
-        src_extra = any(src_ip.startswith(p) for p in extra_prefixes)
-        dst_extra = any(dst_ip.startswith(p) for p in extra_prefixes)
-        if src_extra or dst_extra:
+        # "extra" here = ONLY the non-local subnets (IOT2 192.168.2.x etc.),
+        # excluding the local 192.168.1.x segment (IOT cameras streaming).
+        src_extra = src_ip.startswith("192.168.2.") or src_ip.startswith("192.168.0.") or src_ip.startswith("192.168.8.")
+        if src_extra:
+            stats["iot2_any"] += 1
+            # A reply from IOT2 camera to our host on ANY local port
+            # (SDK ephemeral port after source spoofing, or 54321).
+            if dst_ip == "192.168.1.214":
+                stats["iot2_reply"] += 1
             now = time.time()
             if now - stats["last_report"] > 30:
                 stats["last_report"] = now
-                _LOGGER.info("LAN RELAY: MONITOR total=%d src_extra=%d dst_extra=%d last=%s:%d->%s:%d len=%d",
-                             stats["total"], stats.get("src_extra", 0), stats.get("dst_extra", 0),
+                _LOGGER.info("LAN RELAY: MONITOR total=%d iot2_any=%d iot2_reply=%d last=%s:%d->%s:%d len=%d",
+                             stats["total"], stats["iot2_any"], stats["iot2_reply"],
                              src_ip, src_port, dst_ip, dst_port, ulen)
-                stats["src_extra"] = stats.get("src_extra", 0)
-                stats["dst_extra"] = stats.get("dst_extra", 0)
-            if src_extra:
-                stats["src_extra"] = stats.get("src_extra", 0) + 1
-            if dst_extra:
-                stats["dst_extra"] = stats.get("dst_extra", 0) + 1
 
 
 def main():
