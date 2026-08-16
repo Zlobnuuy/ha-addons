@@ -7,6 +7,10 @@ COPY main.py /app/miloco_server/main.py
 COPY miot_kit_patch/miot/lan.py /app/miot_kit/miot/lan.py
 COPY miot_kit_patch/miot/client.py /app/miot_kit/miot/client.py
 
+# LanSearch relay (SDK broadcast -> unicast to extra subnets)
+COPY miloco_server_patch/lan_relay.py /app/miloco_server/lan_relay.py
+COPY miloco_server_patch/main.py /app/miloco_server/main.py
+
 # Frontend: официальный образ НЕ содержит собранный web_ui (static пуст → CSS/JS 404).
 # Собран локально из XiaoMi/xiaomi-miloco@v0.1.2 web_ui (npm run build) и вшит в static.
 COPY web_ui_dist/ /app/miloco_server/static/
